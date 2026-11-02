@@ -17,8 +17,8 @@ jobs:
     env:
       ARCH: arm64
       # ⚠️ YAHAN APNA REPO DAALEIN (Jisme patched code push kiya hai)
-      KERNEL_REPO: https://github.com/YOUR_USERNAME/YOUR_KERNEL_REPO
-      KERNEL_BRANCH: main 
+      KERNEL_REPO: https://github.com/vikram2fbd009-maker/kernel_xiaomi_mt6833
+      KERNEL_BRANCH: flyme
       KERNEL_DEFCONFIG: camellia_defconfig
       KERNEL_IMAGE: Image.gz-dtb
       CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
