@@ -16,14 +16,10 @@ jobs:
 
     env:
       ARCH: arm64
-      # ⚠️ YAHAN APNA REPO DAALEIN (Jisme patched code push kiya hai)
       KERNEL_REPO: https://github.com/vikram2fbd009-maker/kernel_xiaomi_mt6833
       KERNEL_BRANCH: flyme
       KERNEL_DEFCONFIG: camellia_defconfig
       KERNEL_IMAGE: Image.gz-dtb
-      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
-      GCC64_URL: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
-      GCC32_URL: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
 
     steps:
       - name: Free disk space
@@ -56,14 +52,21 @@ jobs:
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
 
-      - name: Download toolchain
+      - name: Download toolchain (Using git clone)
         run: |
           TC="$GITHUB_WORKSPACE/toolchain"
-          mkdir -p "$TC/clang" "$TC/gcc64" "$TC/gcc32"
-          curl -sSL "$CLANG_URL" | tar -xz -C "$TC/clang" &
-          curl -sSL "$GCC64_URL" | tar -xz -C "$TC/gcc64" &
-          curl -sSL "$GCC32_URL" | tar -xz -C "$TC/gcc32" &
-          wait
+          mkdir -p "$TC"
+          
+          # Clang Clone
+          git clone --depth=1 -b master-kernel-build-2022 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$TC/clang-repo"
+          mv "$TC/clang-repo/clang-r450784e" "$TC/clang"
+          rm -rf "$TC/clang-repo"
+          
+          # GCC64 Clone
+          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 "$TC/gcc64"
+          
+          # GCC32 Clone
+          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 "$TC/gcc32"
 
       - name: Build kernel
         run: |
@@ -85,20 +88,13 @@ jobs:
           make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG"
           make "${MAKE_ARGS[@]}" -j"$(nproc --all)"
 
-      # 🛠️ ANY KERNEL 3 SETUP
       - name: Setup AnyKernel3
         run: |
           cd "$GITHUB_WORKSPACE"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          
-          # 🔥 DEVICE CHECK BYPASS (Unsupported Device error nahi aayega)
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          
-          # Kernel name update karein
           sed -i 's/kernel.string=.*/kernel.string=Overclock Kernel for Camellia/' anykernel.sh
-          
-          # Image copy karein
           cp ../kernel/out/arch/$ARCH/boot/$KERNEL_IMAGE .
 
       - name: Create Flashable ZIP
