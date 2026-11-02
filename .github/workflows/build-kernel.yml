@@ -1,23 +1,24 @@
-name: Build Kernel
+name: Build Kernel & AnyKernel3
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, master, 4.14, lineage-20 ]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build camellia kernel
+    name: Build camellia Kernel
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     env:
       ARCH: arm64
-      KERNEL_REPO: https://github.com/dssomvir/android-kernel-xiaomi-camellia
-      KERNEL_BRANCH: 4.19.cip
+      # ⚠️ YAHAN APNA REPO DAALEIN (Jisme patched code push kiya hai)
+      KERNEL_REPO: https://github.com/YOUR_USERNAME/YOUR_KERNEL_REPO
+      KERNEL_BRANCH: main 
       KERNEL_DEFCONFIG: camellia_defconfig
       KERNEL_IMAGE: Image.gz-dtb
       CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
@@ -36,13 +37,12 @@ jobs:
           docker-images: true
           swap-storage: false
 
-      - name: Add swap
+      - name: Add swap space
         run: |
           sudo fallocate -l 8G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          free -h
 
       - name: Install dependencies
         run: |
@@ -52,36 +52,23 @@ jobs:
             git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd \
             libncurses-dev
 
-      - name: Download toolchain
-        run: |
-          TC="$GITHUB_WORKSPACE/toolchain"
-          mkdir -p "$TC"
-
-          echo "::group::clang"
-          mkdir -p "$TC/clang"
-          curl -sSL "$CLANG_URL" | tar -xz -C "$TC/clang"
-          "$TC/clang/bin/clang" --version
-          echo "::endgroup::"
-
-          echo "::group::gcc64"
-          mkdir -p "$TC/gcc64"
-          curl -sSL "$GCC64_URL" | tar -xz -C "$TC/gcc64"
-          echo "::endgroup::"
-
-          echo "::group::gcc32"
-          mkdir -p "$TC/gcc32"
-          curl -sSL "$GCC32_URL" | tar -xz -C "$TC/gcc32"
-          echo "::endgroup::"
-
       - name: Clone kernel source
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
+
+      - name: Download toolchain
+        run: |
+          TC="$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TC/clang" "$TC/gcc64" "$TC/gcc32"
+          curl -sSL "$CLANG_URL" | tar -xz -C "$TC/clang" &
+          curl -sSL "$GCC64_URL" | tar -xz -C "$TC/gcc64" &
+          curl -sSL "$GCC32_URL" | tar -xz -C "$TC/gcc32" &
+          wait
 
       - name: Build kernel
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel"
-
           TC="$GITHUB_WORKSPACE/toolchain"
           export PATH="$TC/clang/bin:$PATH"
 
@@ -91,33 +78,37 @@ jobs:
             CC=clang
             CLANG_TRIPLE=aarch64-linux-gnu-
             LD=ld.lld
-            KCFLAGS=-Wno-error=strict-prototypes
             CROSS_COMPILE="$TC/gcc64/bin/aarch64-linux-android-"
             CROSS_COMPILE_ARM32="$TC/gcc32/bin/arm-linux-androideabi-"
           )
 
-          echo "::group::defconfig"
           make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG"
-          echo "::endgroup::"
-
-          echo "::group::compile"
           make "${MAKE_ARGS[@]}" -j"$(nproc --all)"
-          echo "::endgroup::"
 
-          echo "::group::result"
-          ls -la "out/arch/$ARCH/boot/"
-          echo "::endgroup::"
+      # 🛠️ ANY KERNEL 3 SETUP
+      - name: Setup AnyKernel3
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          cd anykernel
+          
+          # 🔥 DEVICE CHECK BYPASS (Unsupported Device error nahi aayega)
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
+          # Kernel name update karein
+          sed -i 's/kernel.string=.*/kernel.string=Overclock Kernel for Camellia/' anykernel.sh
+          
+          # Image copy karein
+          cp ../kernel/out/arch/$ARCH/boot/$KERNEL_IMAGE .
 
-      - name: Upload kernel image
+      - name: Create Flashable ZIP
+        run: |
+          cd "$GITHUB_WORKSPACE/anykernel"
+          zip -r9 "$GITHUB_WORKSPACE/AnyKernel3-camellia.zip" * -x ".git/*"
+
+      - name: Upload AnyKernel3 Zip
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.KERNEL_IMAGE }}-camellia
-          path: kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE }}
+          name: AnyKernel3-camellia
+          path: AnyKernel3-camellia.zip
           if-no-files-found: error
-
-      - name: Upload full boot output (for debugging)
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-out-boot
-          path: kernel/out/arch/${{ env.ARCH }}/boot/
-          if-no-files-found: warn
