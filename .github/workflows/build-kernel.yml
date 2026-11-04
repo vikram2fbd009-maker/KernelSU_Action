@@ -3,7 +3,7 @@ name: Build Kernel & AnyKernel3
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master, 4.14, lineage-20 ]
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -16,8 +16,8 @@ jobs:
 
     env:
       ARCH: arm64
-      KERNEL_REPO: https://github.com/vikram2fbd009-maker/kernel_xiaomi_mt6833
-      KERNEL_BRANCH: flyme
+      KERNEL_REPO: https://github.com/vikram2fbd009-maker/Kernel_mt6833
+      KERNEL_BRANCH: main
       KERNEL_DEFCONFIG: camellia_defconfig
       KERNEL_IMAGE: Image.gz-dtb
 
