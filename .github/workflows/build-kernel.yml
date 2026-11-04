@@ -16,7 +16,7 @@ jobs:
 
     env:
       ARCH: arm64
-      KERNEL_REPO: https://github.com/vikram2fbd009-maker/Kernel_mt6833
+      KERNEL_REPO: https://github.com/vikram2fbd009-maker/Kernel_mt6833_bakasu_3.0ghz
       KERNEL_BRANCH: main
       KERNEL_DEFCONFIG: camellia_defconfig
       KERNEL_IMAGE: Image.gz-dtb
@@ -46,36 +46,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio curl device-tree-compiler flex \
             git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd \
-            libncurses-dev ccache
-
-      # ---------- FAST BUILD: cache toolchain ----------
-      - name: Cache toolchain
-        id: cache-toolchain
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/toolchain
-          key: toolchain-clang-r450784e-gcc-4.9-v1
-
-      - name: Download toolchain (git clone)
-        if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        run: |
-          TC="$GITHUB_WORKSPACE/toolchain"
-          mkdir -p "$TC"
-          git clone --depth=1 -b master-kernel-build-2022 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$TC/clang-repo"
-          mv "$TC/clang-repo/clang-r450784e" "$TC/clang"
-          rm -rf "$TC/clang-repo"
-          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 "$TC/gcc64"
-          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 "$TC/gcc32"
+            libncurses-dev
 
       - name: Clone kernel source
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
 
-      # ---------- BUILD: keep-going, collect all errors ----------
-      - name: Build kernel (keep-going)
-        id: build
+      - name: Download toolchain (Using git clone)
         run: |
-          set +e
+          TC="$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TC"
+          
+          # Clang Clone
+          git clone --depth=1 -b master-kernel-build-2022 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$TC/clang-repo"
+          mv "$TC/clang-repo/clang-r450784e" "$TC/clang"
+          rm -rf "$TC/clang-repo"
+          
+          # GCC64 Clone
+          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 "$TC/gcc64"
+          
+          # GCC32 Clone
+          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 "$TC/gcc32"
+
+      - name: Build kernel
+        run: |
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel"
           TC="$GITHUB_WORKSPACE/toolchain"
           export PATH="$TC/clang/bin:$PATH"
@@ -90,83 +85,10 @@ jobs:
             CROSS_COMPILE_ARM32="$TC/gcc32/bin/arm-linux-androideabi-"
           )
 
-          LOG="$GITHUB_WORKSPACE/build.log"
-          : > "$LOG"
+          make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG"
+          make "${MAKE_ARGS[@]}" -j"$(nproc --all)"
 
-          echo "=== [1/2] defconfig ===" | tee -a "$LOG"
-          make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG" 2>&1 | tee -a "$LOG"
-          DEFCFG_EXIT=${PIPESTATUS[0]}
-          echo "defconfig_exit=$DEFCFG_EXIT" >> "$GITHUB_OUTPUT"
-
-          if [ "$DEFCFG_EXIT" -ne 0 ]; then
-            echo "build_exit=$DEFCFG_EXIT" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "=== [2/2] full build (-k -O) ===" | tee -a "$LOG"
-          make "${MAKE_ARGS[@]}" -k -O -j"$(nproc --all)" 2>&1 | tee -a "$LOG"
-          BUILD_EXIT=${PIPESTATUS[0]}
-          echo "build_exit=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
-          echo "build exit code: $BUILD_EXIT"
-
-      # ---------- ERROR SUMMARY ----------
-      - name: Collect ALL errors (no stopping at first)
-        if: steps.build.outputs.build_exit != '0'
-        run: |
-          LOG="$GITHUB_WORKSPACE/build.log"
-
-          echo "================================================================"
-          echo "  BUILD FAILED — SAARE ERRORS EK SAATH (fix together)"
-          echo "================================================================"
-
-          ERR_LINES=$(grep -E "(fatal error:| error:|undefined reference|Error [0-9]+)" "$LOG" | sort -u || true)
-
-          {
-            echo "## ❌ Build Errors Summary"
-            echo ""
-            echo "Build exit code: \`${{ steps.build.outputs.build_exit }}\`"
-            echo ""
-            echo "### Files with errors (fix priority: most errors first)"
-            echo ""
-            echo "| File | Errors |"
-            echo "|------|--------|"
-            grep -oE '[^ ]+\.(c|h|S|lds):[0-9]+:[0-9]+: (fatal )?error:' "$LOG" 2>/dev/null \
-              | sed -E 's/:[0-9]+:[0-9]+: (fatal )?error://' \
-              | sort | uniq -c | sort -rn \
-              | awk '{printf "| `%s` | %s |\n", $2, $1}' || true
-            echo ""
-            echo "### Unique error messages"
-            echo ""
-            echo '```'
-            echo "$ERR_LINES"
-            echo '```'
-          } | tee "$GITHUB_STEP_SUMMARY"
-
-          echo ""
-          echo "=== Unique error lines ==="
-          echo "$ERR_LINES"
-          echo ""
-          echo "=== Total: $(echo "$ERR_LINES" | grep -c . || echo 0) unique error(s) ==="
-          echo "================================================================"
-
-          echo "$ERR_LINES" | while IFS= read -r l; do
-            [ -n "$l" ] && echo "::error::$l"
-          done
-
-          exit 1
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: warn
-          retention-days: 7
-
-      # ---------- ONLY IF BUILD SUCCEEDED ----------
       - name: Setup AnyKernel3
-        if: steps.build.outputs.build_exit == '0'
         run: |
           cd "$GITHUB_WORKSPACE"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
@@ -176,13 +98,11 @@ jobs:
           cp ../kernel/out/arch/$ARCH/boot/$KERNEL_IMAGE .
 
       - name: Create Flashable ZIP
-        if: steps.build.outputs.build_exit == '0'
         run: |
           cd "$GITHUB_WORKSPACE/anykernel"
           zip -r9 "$GITHUB_WORKSPACE/AnyKernel3-camellia.zip" * -x ".git/*"
 
       - name: Upload AnyKernel3 Zip
-        if: steps.build.outputs.build_exit == '0'
         uses: actions/upload-artifact@v4
         with:
           name: AnyKernel3-camellia
