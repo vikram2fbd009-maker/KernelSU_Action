@@ -69,6 +69,12 @@ jobs:
           git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 "$TC/gcc32"
 
       - name: Build kernel
+        env:
+          # यहाँ हमने डेट और वर्ज़न फोर्स कर दिया है
+          KBUILD_BUILD_VERSION: "1"
+          KBUILD_BUILD_TIMESTAMP: "Fri Sep 22 15:14:42 CST 2023"
+          KBUILD_BUILD_USER: "redmi"
+          KBUILD_BUILD_HOST: "localhost"
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel"
