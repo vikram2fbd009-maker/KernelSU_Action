@@ -48,6 +48,8 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
       IN_EXTRA_DEFCONFIG: ${{ inputs.extra_defconfig }}
+      # 👇 YEH LINE BUILD KO BICH MEIN ROKNE SE BACHATI HAI (-k = keep going)
+      MAKEFLAGS: "-k"
 
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +93,18 @@ jobs:
         run: bash scripts/source.sh
         continue-on-error: true
 
+      # 👇 FAILSAFE: Agar NoMount ki files missing hain, toh config se line hata do taaki build start ho jaye
+      - name: Failsafe - Fix NoMount Kconfig
+        shell: bash
+        run: |
+          cd $WORKSPACE/android-kernel || cd .
+          if [ ! -f "fs/nomount/Kconfig" ]; then
+            echo "[-] NoMount files missing! Removing source line to prevent build failure."
+            sed -i '/source "fs\/nomount\/Kconfig"/d' fs/Kconfig || true
+          else
+            echo "[+] NoMount files found. Proceeding."
+          fi
+
       - name: Set up ccache
         if: env.ENABLE_CCACHE == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
@@ -98,7 +112,7 @@ jobs:
           key: kernel-${{ env.DEVICE }}-${{ env.KERNEL_VERSION }}
           max-size: 2G
 
-      # BUILD STEP: Save everything to build_full_log.txt
+      # BUILD STEP
       - name: Build kernel
         shell: bash
         run: |
@@ -106,16 +120,14 @@ jobs:
           bash scripts/build.sh all 2>&1 | tee build_full_log.txt
         continue-on-error: true
 
-      # ERROR EXTRACTION: Nikaal kar alag file banayein
+      # ERROR EXTRACTION
       - name: Extract Errors for Download
         if: always()
         shell: bash
         run: |
           if [ -f build_full_log.txt ]; then
-            # Sirf error lines aur warnings nikaalein
             grep -i -E "error:|fatal error:|Error [0-9]|undefined reference|No rule to make target|fatal:" build_full_log.txt > build_errors.txt || true
             
-            # Agar compiler ne error toh diya par upar wala grep fail ho jaye, toh last 200 lines utha lo
             if [ ! -s build_errors.txt ]; then
               echo "No specific 'error:' keyword found. Showing the last 200 lines of the build log:" > build_errors.txt
               tail -n 200 build_full_log.txt >> build_errors.txt
@@ -124,7 +136,6 @@ jobs:
             echo "Build log was not created." > build_errors.txt
           fi
 
-      # UPLOAD ERROR LOG AS ARTIFACT
       - name: Upload Error Log
         if: always()
         uses: actions/upload-artifact@v4
