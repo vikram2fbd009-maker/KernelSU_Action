@@ -87,15 +87,9 @@ jobs:
       - name: Set up toolchain
         run: bash scripts/toolchain.sh
 
-      # Fetch kernel source step is usually for cloning original source. 
-      # If your scripts/source.sh clones the original source, remove this step.
-      # Because we need to build the source that is already in this repository.
       - name: Fetch kernel source
         run: bash scripts/source.sh
         continue-on-error: true
-
-      # NOTE: "Install KernelSU" and "Apply kernel patches" steps are removed
-      # because we already integrated everything locally!
 
       - name: Set up ccache
         if: env.ENABLE_CCACHE == 'true'
@@ -104,10 +98,42 @@ jobs:
           key: kernel-${{ env.DEVICE }}-${{ env.KERNEL_VERSION }}
           max-size: 2G
 
-      # Build will not stop immediately, allowing us to see all errors
+      # BUILD STEP: Save everything to build_full_log.txt
       - name: Build kernel
-        run: bash scripts/build.sh all || echo "❌ BUILD FAILED! Check the logs above for errors."
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/build.sh all 2>&1 | tee build_full_log.txt
         continue-on-error: true
+
+      # ERROR EXTRACTION: Nikaal kar alag file banayein
+      - name: Extract Errors for Download
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build_full_log.txt ]; then
+            # Sirf error lines aur warnings nikaalein
+            grep -i -E "error:|fatal error:|Error [0-9]|undefined reference|No rule to make target|fatal:" build_full_log.txt > build_errors.txt || true
+            
+            # Agar compiler ne error toh diya par upar wala grep fail ho jaye, toh last 200 lines utha lo
+            if [ ! -s build_errors.txt ]; then
+              echo "No specific 'error:' keyword found. Showing the last 200 lines of the build log:" > build_errors.txt
+              tail -n 200 build_full_log.txt >> build_errors.txt
+            fi
+          else
+            echo "Build log was not created." > build_errors.txt
+          fi
+
+      # UPLOAD ERROR LOG AS ARTIFACT
+      - name: Upload Error Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Errors-Log-${{ github.run_id }}
+          path: |
+            build_errors.txt
+            build_full_log.txt
+          if-no-files-found: warn
 
       - name: Package artifacts
         run: bash scripts/package.sh all || echo "❌ PACKAGING FAILED!"
@@ -134,22 +160,6 @@ jobs:
         with:
           name: AnyKernel3${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
           path: kernel_workspace/AnyKernel3/*
-          if-no-files-found: warn
-
-      - name: Upload DTBO image
-        if: env.CHECK_DTBO_IS_OK == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: dtbo-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
-          path: kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img
-          if-no-files-found: warn
-
-      - name: Upload boot image
-        if: env.MAKE_BOOT_IMAGE_IS_OK == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: boot${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
-          path: kernel_workspace/boot.img
           if-no-files-found: warn
 
   release:
