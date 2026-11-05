@@ -1,29 +1,63 @@
-name: Build Kernel & AnyKernel3
+name: Build Kernel
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+    inputs:
+      config:
+        description: "Config file to build (path, relative to the repo root)"
+        required: false
+        default: "config.env"
+        type: string
+      extra_defconfig:
+        description: "Extra defconfig lines, space separated (e.g. CONFIG_TMPFS_XATTR=y)"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Publish the build as a GitHub Release"
+        required: false
+        default: false
+        type: boolean
+
+  workflow_call:
+    inputs:
+      config:          { required: false, default: "config.env", type: string }
+      extra_defconfig: { required: false, default: "",           type: string }
+      publish_release: { required: false, default: false,        type: boolean }
+
+concurrency:
+  group: build-kernel-${{ github.ref }}-${{ inputs.config }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build camellia Kernel
+    name: Build ${{ inputs.config }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
-
+    outputs:
+      device: ${{ steps.meta.outputs.device }}
+      build_time: ${{ steps.meta.outputs.build_time }}
+      kernel_release: ${{ steps.meta.outputs.kernel_release }}
     env:
-      ARCH: arm64
-      KERNEL_REPO: https://github.com/vikram2fbd009-maker/Kernel_mt6833_bakasu_3.0ghz
-      KERNEL_BRANCH: main
-      KERNEL_DEFCONFIG: camellia_defconfig
-      KERNEL_IMAGE: Image.gz-dtb
+      WORKSPACE: ${{ github.workspace }}/kernel_workspace
+      CONFIG_ENV: ${{ inputs.config }}
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      IN_EXTRA_DEFCONFIG: ${{ inputs.extra_defconfig }}
 
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+      - uses: actions/checkout@v4
+
+      - name: Resolve configuration
+        run: bash scripts/config.sh
+
+      - name: Free up disk space
+        if: env.REMOVE_UNUSED_PACKAGES == 'true'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           tool-cache: true
           android: false
@@ -39,78 +73,123 @@ jobs:
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
+          free -h
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio curl device-tree-compiler flex \
+            bc bison build-essential ccache cpio curl device-tree-compiler flex \
             git libelf-dev libssl-dev lz4 make python3 rsync unzip zip zstd \
             libncurses-dev
+          mkdir -p "$WORKSPACE"
 
-      - name: Clone kernel source
-        run: |
-          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
+      - name: Set up toolchain
+        run: bash scripts/toolchain.sh
 
-      - name: Download toolchain (Using git clone)
-        run: |
-          TC="$GITHUB_WORKSPACE/toolchain"
-          mkdir -p "$TC"
-          
-          # Clang Clone
-          git clone --depth=1 -b master-kernel-build-2022 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$TC/clang-repo"
-          mv "$TC/clang-repo/clang-r450784e" "$TC/clang"
-          rm -rf "$TC/clang-repo"
-          
-          # GCC64 Clone
-          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 "$TC/gcc64"
-          
-          # GCC32 Clone
-          git clone --depth=1 -b android-12.1.0_r27 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 "$TC/gcc32"
+      # Fetch kernel source step is usually for cloning original source. 
+      # If your scripts/source.sh clones the original source, remove this step.
+      # Because we need to build the source that is already in this repository.
+      - name: Fetch kernel source
+        run: bash scripts/source.sh
+        continue-on-error: true
 
+      # NOTE: "Install KernelSU" and "Apply kernel patches" steps are removed
+      # because we already integrated everything locally!
+
+      - name: Set up ccache
+        if: env.ENABLE_CCACHE == 'true'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: kernel-${{ env.DEVICE }}-${{ env.KERNEL_VERSION }}
+          max-size: 2G
+
+      # Build will not stop immediately, allowing us to see all errors
       - name: Build kernel
-        env:
-          # यहाँ हमने डेट और वर्ज़न फोर्स कर दिया है
-          KBUILD_BUILD_VERSION: "1"
-          KBUILD_BUILD_TIMESTAMP: "Fri Sep 22 15:14:42 CST 2023"
-          KBUILD_BUILD_USER: "redmi"
-          KBUILD_BUILD_HOST: "localhost"
+        run: bash scripts/build.sh all || echo "❌ BUILD FAILED! Check the logs above for errors."
+        continue-on-error: true
+
+      - name: Package artifacts
+        run: bash scripts/package.sh all || echo "❌ PACKAGING FAILED!"
+        continue-on-error: true
+
+      - name: Export build metadata
+        id: meta
         run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel"
-          TC="$GITHUB_WORKSPACE/toolchain"
-          export PATH="$TC/clang/bin:$PATH"
+          {
+            echo "device=${DEVICE}"
+            echo "build_time=${BUILD_TIME}"
+            echo "kernel_release=${KERNEL_RELEASE:-}"
+          } >> "$GITHUB_OUTPUT"
 
-          MAKE_ARGS=(
-            O=out
-            ARCH=$ARCH
-            CC=clang
-            CLANG_TRIPLE=aarch64-linux-gnu-
-            LD=ld.lld
-            CROSS_COMPILE="$TC/gcc64/bin/aarch64-linux-android-"
-            CROSS_COMPILE_ARM32="$TC/gcc32/bin/arm-linux-androideabi-"
-          )
-
-          make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG"
-          make "${MAKE_ARGS[@]}" -j"$(nproc --all)"
-
-      - name: Setup AnyKernel3
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          cd anykernel
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/kernel.string=.*/kernel.string=Overclock Kernel for Camellia/' anykernel.sh
-          cp ../kernel/out/arch/$ARCH/boot/$KERNEL_IMAGE .
-
-      - name: Create Flashable ZIP
-        run: |
-          cd "$GITHUB_WORKSPACE/anykernel"
-          zip -r9 "$GITHUB_WORKSPACE/AnyKernel3-camellia.zip" * -x ".git/*"
-
-      - name: Upload AnyKernel3 Zip
+      - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-camellia
-          path: AnyKernel3-camellia.zip
-          if-no-files-found: error
+          name: ${{ env.KERNEL_IMAGE_NAME }}${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}
+          if-no-files-found: warn
+
+      - name: Upload AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/AnyKernel3/*
+          if-no-files-found: warn
+
+      - name: Upload DTBO image
+        if: env.CHECK_DTBO_IS_OK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbo-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img
+          if-no-files-found: warn
+
+      - name: Upload boot image
+        if: env.MAKE_BOOT_IMAGE_IS_OK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/boot.img
+          if-no-files-found: warn
+
+  release:
+    name: Publish release
+    needs: build
+    if: inputs.publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Package AnyKernel3 as a flashable zip
+        run: |
+          mkdir -p release
+          shopt -s nullglob
+          for dir in artifacts/AnyKernel3*/; do
+            name=$(basename "${dir%/}")
+            (cd "$dir" && zip -qr9 "${GITHUB_WORKSPACE}/release/${name}.zip" .)
+            echo "packed ${name}.zip"
+          done
+          for f in artifacts/*/Image* artifacts/*/boot.img artifacts/*/dtbo.img; do
+            [ -f "$f" ] && cp "$f" release/
+          done
+          ls -la release/
+
+      - name: Create release
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
+        with:
+          tag_name: ${{ needs.build.outputs.device }}-${{ needs.build.outputs.build_time }}
+          name: ${{ needs.build.outputs.device }} · ${{ needs.build.outputs.build_time }}
+          body: |
+            | | |
+            | --- | --- |
+            | Device | `${{ needs.build.outputs.device }}` |
+            | Kernel | `${{ needs.build.outputs.kernel_release }}` |
+
+            Flash the AnyKernel3 zip from a custom recovery.
+          files: release/*
