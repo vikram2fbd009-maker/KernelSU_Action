@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       config:
-        description: "Config file to build (path, relative to the repo root)"
+        description: "Config file to build"
         required: false
         default: "config.env"
         type: string
       extra_defconfig:
-        description: "Extra defconfig lines, space separated"
+        description: "Extra defconfig lines"
         required: false
         default: ""
         type: string
@@ -40,6 +40,7 @@ jobs:
       - name: Resolve configuration
         run: bash scripts/config.sh
 
+      # Fast setup (removed unnecessary disk cleanup/swap)
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -52,6 +53,15 @@ jobs:
       - name: Set up toolchain
         run: bash scripts/toolchain.sh
 
+      # 1. Fetch Source (Zaroori hai defconfig ke liye)
+      - name: Fetch kernel source
+        run: bash scripts/source.sh
+
+      # 2. Set KERNEL_DIR (Kyunki hum kernelsu.sh skip kar rahe hain)
+      - name: Set KERNEL_DIR
+        run: |
+          echo "KERNEL_DIR=${{ github.workspace }}/kernel_workspace/android-kernel" >> $GITHUB_ENV
+
       - name: Set up ccache
         if: env.ENABLE_CCACHE == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
@@ -59,17 +69,7 @@ jobs:
           key: kernel-${{ env.DEVICE }}-${{ env.KERNEL_VERSION }}
           max-size: 2G
 
-      # ============================================================
-      # YAHAN KERNEL_DIR SET HO RAHA HAI
-      # ============================================================
-      - name: Set KERNEL_DIR
-        run: |
-          echo "KERNEL_DIR=${{ github.workspace }}/kernel_workspace/android-kernel" >> $GITHUB_ENV
-          echo "KERNEL_DIR set to: $KERNEL_DIR"
-
-      # ============================================================
-      # BUILD STEP — No -k flag, so build stops at FIRST error
-      # ============================================================
+      # 3. BUILD STEP (No -k flag, error aate hi ruk jayega)
       - name: Build kernel
         id: build
         shell: bash
@@ -78,16 +78,14 @@ jobs:
           bash scripts/build.sh all 2>&1 | tee build_full_log.txt
         continue-on-error: true
 
-      # Agar build fail hua toh yeh step turant fail kar dega
+      # 4. FAIL-FAST CHECK
       - name: Check build result
         if: steps.build.outcome == 'failure'
         run: |
-          echo ""
-          echo "❌❌❌ BUILD FAILED AT FIRST ERROR ❌❌❌"
-          echo "Scroll UP to the 'Build kernel' step and read the error."
-          echo ""
+          echo "❌ BUILD FAILED AT FIRST ERROR! Check the 'Build kernel' step above."
           exit 1
 
+      # 5. Package & Upload
       - name: Package artifacts
         if: steps.build.outcome == 'success'
         run: bash scripts/package.sh all
