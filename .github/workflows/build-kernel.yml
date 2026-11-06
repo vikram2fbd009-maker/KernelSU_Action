@@ -9,7 +9,7 @@ on:
         default: "config.env"
         type: string
       extra_defconfig:
-        description: "Extra defconfig lines, space separated (e.g. CONFIG_TMPFS_XATTR=y)"
+        description: "Extra defconfig lines, space separated"
         required: false
         default: ""
         type: string
@@ -33,8 +33,6 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
       IN_EXTRA_DEFCONFIG: ${{ inputs.extra_defconfig }}
-      # YEH LINE BUILD KO BICH MEIN ROKNE SE BACHATI HAI
-      MAKEFLAGS: "-k"
 
     steps:
       - uses: actions/checkout@v4
@@ -61,39 +59,43 @@ jobs:
           key: kernel-${{ env.DEVICE }}-${{ env.KERNEL_VERSION }}
           max-size: 2G
 
-      # BUILD STEP
+      # ============================================================
+      # YAHAN KERNEL_DIR SET HO RAHA HAI
+      # ============================================================
+      - name: Set KERNEL_DIR
+        run: |
+          echo "KERNEL_DIR=${{ github.workspace }}/kernel_workspace/android-kernel" >> $GITHUB_ENV
+          echo "KERNEL_DIR set to: $KERNEL_DIR"
+
+      # ============================================================
+      # BUILD STEP — No -k flag, so build stops at FIRST error
+      # ============================================================
       - name: Build kernel
+        id: build
         shell: bash
         run: |
           set -o pipefail
           bash scripts/build.sh all 2>&1 | tee build_full_log.txt
         continue-on-error: true
 
-      # ERROR EXTRACTION
-      - name: Extract Errors for Download
-        if: always()
-        shell: bash
+      # Agar build fail hua toh yeh step turant fail kar dega
+      - name: Check build result
+        if: steps.build.outcome == 'failure'
         run: |
-          if [ -f build_full_log.txt ]; then
-            grep -i -E "error:|fatal error:|Error [0-9]|undefined reference|No rule to make target|fatal:" build_full_log.txt > build_errors.txt || true
-            if [ ! -s build_errors.txt ]; then
-              echo "No specific 'error:' keyword found. Showing the last 200 lines of the build log:" > build_errors.txt
-              tail -n 200 build_full_log.txt >> build_errors.txt
-            fi
-          else
-            echo "Build log was not created." > build_errors.txt
-          fi
-
-      - name: Upload Error Log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Build-Errors-Log-${{ github.run_id }}
-          path: |
-            build_errors.txt
-            build_full_log.txt
-          if-no-files-found: warn
+          echo ""
+          echo "❌❌❌ BUILD FAILED AT FIRST ERROR ❌❌❌"
+          echo "Scroll UP to the 'Build kernel' step and read the error."
+          echo ""
+          exit 1
 
       - name: Package artifacts
-        run: bash scripts/package.sh all || echo "❌ PACKAGING FAILED!"
-        continue-on-error: true
+        if: steps.build.outcome == 'success'
+        run: bash scripts/package.sh all
+
+      - name: Upload AnyKernel3
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/AnyKernel3/*
+          if-no-files-found: error
