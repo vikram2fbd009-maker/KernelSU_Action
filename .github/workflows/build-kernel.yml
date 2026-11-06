@@ -13,17 +13,6 @@ on:
         required: false
         default: ""
         type: string
-      publish_release:
-        description: "Publish the build as a GitHub Release"
-        required: false
-        default: false
-        type: boolean
-
-  workflow_call:
-    inputs:
-      config:          { required: false, default: "config.env", type: string }
-      extra_defconfig: { required: false, default: "",           type: string }
-      publish_release: { required: false, default: false,        type: boolean }
 
 concurrency:
   group: build-kernel-${{ github.ref }}-${{ inputs.config }}
@@ -37,10 +26,6 @@ jobs:
     name: Build ${{ inputs.config }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    outputs:
-      device: ${{ steps.meta.outputs.device }}
-      build_time: ${{ steps.meta.outputs.build_time }}
-      kernel_release: ${{ steps.meta.outputs.kernel_release }}
     env:
       WORKSPACE: ${{ github.workspace }}/kernel_workspace
       CONFIG_ENV: ${{ inputs.config }}
@@ -48,7 +33,7 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
       IN_EXTRA_DEFCONFIG: ${{ inputs.extra_defconfig }}
-      # 👇 YEH LINE BUILD KO BICH MEIN ROKNE SE BACHATI HAI (-k = keep going)
+      # YEH LINE BUILD KO BICH MEIN ROKNE SE BACHATI HAI
       MAKEFLAGS: "-k"
 
     steps:
@@ -56,26 +41,6 @@ jobs:
 
       - name: Resolve configuration
         run: bash scripts/config.sh
-
-      - name: Free up disk space
-        if: env.REMOVE_UNUSED_PACKAGES == 'true'
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: false
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
-      - name: Add swap space
-        run: |
-          sudo fallocate -l 8G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-          free -h
 
       - name: Install build dependencies
         run: |
@@ -88,22 +53,6 @@ jobs:
 
       - name: Set up toolchain
         run: bash scripts/toolchain.sh
-
-      - name: Fetch kernel source
-        run: bash scripts/source.sh
-        continue-on-error: true
-
-      # 👇 FAILSAFE: Agar NoMount ki files missing hain, toh config se line hata do taaki build start ho jaye
-      - name: Failsafe - Fix NoMount Kconfig
-        shell: bash
-        run: |
-          cd $WORKSPACE/android-kernel || cd .
-          if [ ! -f "fs/nomount/Kconfig" ]; then
-            echo "[-] NoMount files missing! Removing source line to prevent build failure."
-            sed -i '/source "fs\/nomount\/Kconfig"/d' fs/Kconfig || true
-          else
-            echo "[+] NoMount files found. Proceeding."
-          fi
 
       - name: Set up ccache
         if: env.ENABLE_CCACHE == 'true'
@@ -127,7 +76,6 @@ jobs:
         run: |
           if [ -f build_full_log.txt ]; then
             grep -i -E "error:|fatal error:|Error [0-9]|undefined reference|No rule to make target|fatal:" build_full_log.txt > build_errors.txt || true
-            
             if [ ! -s build_errors.txt ]; then
               echo "No specific 'error:' keyword found. Showing the last 200 lines of the build log:" > build_errors.txt
               tail -n 200 build_full_log.txt >> build_errors.txt
@@ -149,68 +97,3 @@ jobs:
       - name: Package artifacts
         run: bash scripts/package.sh all || echo "❌ PACKAGING FAILED!"
         continue-on-error: true
-
-      - name: Export build metadata
-        id: meta
-        run: |
-          {
-            echo "device=${DEVICE}"
-            echo "build_time=${BUILD_TIME}"
-            echo "kernel_release=${KERNEL_RELEASE:-}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Upload kernel image
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.KERNEL_IMAGE_NAME }}${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
-          path: kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}
-          if-no-files-found: warn
-
-      - name: Upload AnyKernel3
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnyKernel3${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
-          path: kernel_workspace/AnyKernel3/*
-          if-no-files-found: warn
-
-  release:
-    name: Publish release
-    needs: build
-    if: inputs.publish_release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: Package AnyKernel3 as a flashable zip
-        run: |
-          mkdir -p release
-          shopt -s nullglob
-          for dir in artifacts/AnyKernel3*/; do
-            name=$(basename "${dir%/}")
-            (cd "$dir" && zip -qr9 "${GITHUB_WORKSPACE}/release/${name}.zip" .)
-            echo "packed ${name}.zip"
-          done
-          for f in artifacts/*/Image* artifacts/*/boot.img artifacts/*/dtbo.img; do
-            [ -f "$f" ] && cp "$f" release/
-          done
-          ls -la release/
-
-      - name: Create release
-        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
-        with:
-          tag_name: ${{ needs.build.outputs.device }}-${{ needs.build.outputs.build_time }}
-          name: ${{ needs.build.outputs.device }} · ${{ needs.build.outputs.build_time }}
-          body: |
-            | | |
-            | --- | --- |
-            | Device | `${{ needs.build.outputs.device }}` |
-            | Kernel | `${{ needs.build.outputs.kernel_release }}` |
-
-            Flash the AnyKernel3 zip from a custom recovery.
-          files: release/*
